@@ -382,7 +382,7 @@ window.addEventListener('load', () => {
 });
 
 function connect() {
-  ws = new WebSocket(`ws://${window.location.host}/ws/${encodeURIComponent(myId)}`);
+  ws = new WebSocket(`wss://${window.location.host}/ws/${encodeURIComponent(myId)}`);
   ws.onmessage = (e) => {
     const data = JSON.parse(e.data);
     if (data.type === 'init') { 
