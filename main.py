@@ -1,63 +1,280 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware
 import json
+import sqlite3
+import hashlib
+import os
 from datetime import datetime
-from typing import Dict, List
+from typing import List, Dict
 
 app = FastAPI()
 
-users: Dict[str, dict] = {}
-chats: Dict[str, dict] = {}
-user_chats: Dict[str, List[str]] = {}
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-chat_counter = 0
+# === БАЗА ДАННЫХ ===
+DB_NAME = "pohuy_link.db"
 
-def new_chat_id():
-    global chat_counter
-    chat_counter += 1
-    return f"chat_{chat_counter}"
+def init_db():
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS users (
+        username TEXT PRIMARY KEY,
+        display_name TEXT NOT NULL,
+        password_hash TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS chats (
+        chat_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        is_group INTEGER DEFAULT 0,
+        created_by TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS chat_members (
+        chat_id TEXT,
+        username TEXT,
+        PRIMARY KEY (chat_id, username)
+    )''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS messages (
+        msg_id TEXT PRIMARY KEY,
+        chat_id TEXT,
+        sender TEXT,
+        text TEXT,
+        reply_to TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )''')
+    
+    conn.commit()
+    conn.close()
+
+def hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def get_db():
+    conn = sqlite3.connect(DB_NAME)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+init_db()
+
+# === ОНЛАЙН ЮЗЕРЫ ===
+online_users: Dict[str, WebSocket] = {}
 
 @app.get("/", response_class=HTMLResponse)
 async def get_home():
     with open("index.html", "r", encoding="utf-8") as f:
         return f.read()
 
-@app.get("/search")
+# === АВТОРИЗАЦИЯ ===
+@app.post("/api/register")
+async def register(data: dict):
+    username = data.get("username", "").strip().lower()
+    password = data.get("password", "")
+    display_name = data.get("display_name", username)
+    
+    if not username or not password:
+        raise HTTPException(status_code=400, detail="Юзернейм и пароль обязательны")
+    if len(username) < 3:
+        raise HTTPException(status_code=400, detail="Юзернейм слишком короткий")
+    if len(password) < 4:
+        raise HTTPException(status_code=400, detail="Пароль слишком короткий")
+    
+    conn = get_db()
+    c = conn.cursor()
+    
+    c.execute("SELECT username FROM users WHERE username = ?", (username,))
+    if c.fetchone():
+        conn.close()
+        raise HTTPException(status_code=409, detail="Этот юзернейм уже занят, блядь!")
+    
+    password_hash = hash_password(password)
+    c.execute("INSERT INTO users (username, display_name, password_hash) VALUES (?, ?, ?)", 
+              (username, display_name, password_hash))
+    conn.commit()
+    conn.close()
+    
+    return {"success": True, "username": username}
+
+@app.post("/api/login")
+async def login(data: dict):
+    username = data.get("username", "").strip().lower()
+    password = data.get("password", "")
+    
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT * FROM users WHERE username = ?", (username,))
+    user = c.fetchone()
+    conn.close()
+    
+    if not user:
+        raise HTTPException(status_code=401, detail="Такого юзера нет, сука!")
+    
+    if user["password_hash"] != hash_password(password):
+        raise HTTPException(status_code=401, detail="Неверный пароль, блядь!")
+    
+    return {
+        "success": True,
+        "username": user["username"],
+        "display_name": user["display_name"]
+    }
+
+@app.get("/api/me/{username}")
+async def get_user_profile(username: str):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT username, display_name, created_at FROM users WHERE username = ?", (username,))
+    user = c.fetchone()
+    conn.close()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="Юзер не найден")
+    
+    return dict(user)
+
+@app.put("/api/me/{username}")
+async def update_profile(username: str, data: dict):
+    new_display = data.get("display_name", "").strip()
+    new_username = data.get("username", "").strip().lower()
+    
+    if not new_username or len(new_username) < 3:
+        raise HTTPException(status_code=400, detail="Юзернейм слишком короткий")
+    
+    conn = get_db()
+    c = conn.cursor()
+    
+    if new_username != username:
+        c.execute("SELECT username FROM users WHERE username = ?", (new_username,))
+        if c.fetchone():
+            conn.close()
+            raise HTTPException(status_code=409, detail="Этот юзернейм уже занят!")
+        
+        c.execute("UPDATE users SET username = ?, display_name = ? WHERE username = ?", 
+                  (new_username, new_display or new_username, username))
+        c.execute("UPDATE chat_members SET username = ? WHERE username = ?", (new_username, username))
+        c.execute("UPDATE messages SET sender = ? WHERE sender = ?", (new_username, username))
+        c.execute("UPDATE chats SET created_by = ? WHERE created_by = ?", (new_username, username))
+    else:
+        if new_display:
+            c.execute("UPDATE users SET display_name = ? WHERE username = ?", (new_display, username))
+    
+    conn.commit()
+    conn.close()
+    
+    return {"success": True, "username": new_username, "display_name": new_display or new_username}
+
+# === ПОИСК ===
+@app.get("/api/search")
 async def search_users(q: str):
     q = q.lower().strip()
-    if not q: return []
-    results = []
-    for uname, data in users.items():
-        if q in uname.lower() or q in data.get("display_name", "").lower():
-            results.append({
-                "username": uname,
-                "display_name": data.get("display_name", uname),
-                "online": data.get("ws") is not None
-            })
-    return results
+    if len(q) < 2:
+        return []
+    
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT username, display_name FROM users WHERE (username LIKE ? OR display_name LIKE ?)", 
+              (f"%{q}%", f"%{q}%"))
+    users = [{"username": row["username"], "display_name": row["display_name"], 
+              "online": row["username"] in online_users} for row in c.fetchall()]
+    conn.close()
+    
+    return users
 
+# === ЧАТЫ ===
+@app.get("/api/chats/{username}")
+async def get_user_chats(username: str):
+    conn = get_db()
+    c = conn.cursor()
+    
+    c.execute("""
+        SELECT c.chat_id, c.name, c.is_group, c.created_by
+        FROM chats c
+        JOIN chat_members cm ON c.chat_id = cm.chat_id
+        WHERE cm.username = ?
+        ORDER BY c.created_at DESC
+    """, (username,))
+    
+    chats = []
+    for row in c.fetchall():
+        chat_id = row["chat_id"]
+        
+        c.execute("SELECT username FROM chat_members WHERE chat_id = ?", (chat_id,))
+        members = [r["username"] for r in c.fetchall()]
+        
+        c.execute("SELECT * FROM messages WHERE chat_id = ? ORDER BY created_at DESC LIMIT 1", (chat_id,))
+        last_msg_row = c.fetchone()
+        last_msg = dict(last_msg_row) if last_msg_row else None
+        if last_msg:
+            last_msg["time"] = datetime.fromisoformat(last_msg["created_at"]).strftime("%H:%M") if last_msg["created_at"] else ""
+        
+        chats.append({
+            "id": chat_id,
+            "name": row["name"],
+            "is_group": bool(row["is_group"]),
+            "members": members,
+            "last_msg": last_msg
+        })
+    
+    conn.close()
+    return chats
+
+@app.get("/api/messages/{chat_id}")
+async def get_chat_messages(chat_id: str, limit: int = 100):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("""
+        SELECT m.*, u.display_name 
+        FROM messages m
+        JOIN users u ON m.sender = u.username
+        WHERE m.chat_id = ?
+        ORDER BY m.created_at ASC
+        LIMIT ?
+    """, (chat_id, limit))
+    
+    messages = []
+    for row in c.fetchall():
+        msg = dict(row)
+        msg["time"] = datetime.fromisoformat(msg["created_at"]).strftime("%H:%M") if msg["created_at"] else ""
+        messages.append(msg)
+    
+    conn.close()
+    return messages
+
+# === WEBSOCKET ===
 @app.websocket("/ws/{username}")
 async def websocket_endpoint(websocket: WebSocket, username: str):
     await websocket.accept()
     
-    if username not in users:
-        users[username] = {"display_name": username, "friends": [], "ws": websocket}
-        user_chats[username] = []
-    else:
-        users[username]["ws"] = websocket
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT username, display_name FROM users WHERE username = ?", (username,))
+    user = c.fetchone()
+    conn.close()
     
-    my_data = users[username]
+    if not user:
+        await websocket.close(code=4001, reason="User not found")
+        return
     
-    my_chat_ids = user_chats.get(username, [])
-    my_chats_list = []
-    for cid in my_chat_ids:
-        if cid in chats:
-            c = chats[cid]
-            last_msg = c["messages"][-1] if c["messages"] else None
-            my_chats_list.append({"id": cid, "name": c["name"], "is_group": c["is_group"], "members": c["members"], "last_msg": last_msg})
+    online_users[username] = websocket
     
-    await websocket.send_json({"type": "init", "profile": {"username": username, "display_name": my_data["display_name"]}, "chats": my_chats_list, "friends": my_data["friends"]})
-    await broadcast_online_status(username, True)
+    chats = await get_user_chats(username)
+    await websocket.send_json({
+        "type": "init",
+        "profile": {"username": user["username"], "display_name": user["display_name"]},
+        "chats": chats
+    })
+    
+    await broadcast_status(username, True)
     
     try:
         while True:
@@ -68,105 +285,232 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
                 chat_id = data.get("chat_id")
                 text = data.get("text")
                 reply_to = data.get("reply_to")
-                msg_id = data.get("id", datetime.now().isoformat())
+                msg_id = data.get("id", f"msg_{int(datetime.now().timestamp() * 1000)}")
                 
-                if chat_id and chat_id in chats and username in chats[chat_id]["members"]:
-                    msg = {"type": "message", "chat_id": chat_id, "from": username, "display_name": users[username]["display_name"], "text": text, "id": msg_id, "reply_to": reply_to, "time": datetime.now().strftime("%H:%M")}
-                    chats[chat_id]["messages"].append(msg)
-                    for member in chats[chat_id]["members"]:
-                        if member in users and users[member]["ws"]:
-                            try: await users[member]["ws"].send_json(msg)
-                            except: pass
+                conn = get_db()
+                c = conn.cursor()
+                c.execute("SELECT 1 FROM chat_members WHERE chat_id = ? AND username = ?", (chat_id, username))
+                if not c.fetchone():
+                    conn.close()
+                    continue
+                
+                c.execute("INSERT INTO messages (msg_id, chat_id, sender, text, reply_to) VALUES (?, ?, ?, ?, ?)",
+                          (msg_id, chat_id, username, text, reply_to))
+                conn.commit()
+                
+                c.execute("SELECT username FROM chat_members WHERE chat_id = ?", (chat_id,))
+                members = [r["username"] for r in c.fetchall()]
+                conn.close()
+                
+                msg = {
+                    "type": "message",
+                    "id": msg_id,
+                    "chat_id": chat_id,
+                    "from": username,
+                    "display_name": user["display_name"],
+                    "text": text,
+                    "reply_to": reply_to,
+                    "time": datetime.now().strftime("%H:%M")
+                }
+                
+                for member in members:
+                    if member in online_users:
+                        try:
+                            await online_users[member].send_json(msg)
+                        except:
+                            pass
             
             elif msg_type == "create_chat":
                 members = data.get("members", [])
                 is_group = data.get("is_group", False)
                 chat_name = data.get("name", "")
                 
-                # ЕСЛИ ПУСТОЙ ЧАТ - ОСТАВЛЯЕМ ТОЛЬКО СОЗДАТЕЛЯ
-                if not members:
-                    members = [username]
-                elif username not in members:
+                if username not in members:
                     members.append(username)
                 
-                # Проверка на существующий личный чат
                 if not is_group and len(members) == 2:
-                    for cid, c in chats.items():
-                        if not c["is_group"] and set(c["members"]) == set(members):
-                            for m in members:
-                                if cid not in user_chats.get(m, []): user_chats.setdefault(m, []).append(cid)
-                            await websocket.send_json({"type": "chat_created", "chat_id": cid})
-                            return
+                    conn = get_db()
+                    c = conn.cursor()
+                    c.execute("""
+                        SELECT chat_id FROM chats 
+                        WHERE is_group = 0 
+                        AND chat_id IN (
+                            SELECT chat_id FROM chat_members WHERE username = ?
+                            INTERSECT
+                            SELECT chat_id FROM chat_members WHERE username = ?
+                        )
+                    """, (members[0], members[1]))
+                    existing = c.fetchone()
+                    conn.close()
+                    
+                    if existing:
+                        await websocket.send_json({"type": "chat_created", "chat_id": existing["chat_id"]})
+                        continue
                 
-                cid = new_chat_id()
+                chat_id = f"chat_{int(datetime.now().timestamp() * 1000)}"
                 if not chat_name:
-                    if is_group: chat_name = "Тусовка " + datetime.now().strftime("%d.%m")
+                    if is_group:
+                        chat_name = f"Тусовка {datetime.now().strftime('%d.%m')}"
                     else:
-                        other = [m for m in members if m != username][0] if len(members) > 1 else username
-                        chat_name = users[other]["display_name"]
+                        other = [m for m in members if m != username][0]
+                        conn = get_db()
+                        c = conn.cursor()
+                        c.execute("SELECT display_name FROM users WHERE username = ?", (other,))
+                        row = c.fetchone()
+                        conn.close()
+                        chat_name = row["display_name"] if row else other
                 
-                chats[cid] = {"name": chat_name, "members": members, "messages": [], "is_group": is_group, "created_by": username}
-                for m in members: user_chats.setdefault(m, []).append(cid)
+                conn = get_db()
+                c = conn.cursor()
+                c.execute("INSERT INTO chats (chat_id, name, is_group, created_by) VALUES (?, ?, ?, ?)",
+                          (chat_id, chat_name, int(is_group), username))
                 
-                for m in members:
-                    if m in users and users[m]["ws"]:
-                        try: await users[m]["ws"].send_json({"type": "chat_created", "chat_id": cid, "chat": {"id": cid, "name": chat_name, "is_group": is_group, "members": members, "last_msg": None}})
-                        except: pass
-
-            elif msg_type == "add_member": # ИНВАЙТ В ЧАТ
+                for member in members:
+                    c.execute("INSERT INTO chat_members (chat_id, username) VALUES (?, ?)", (chat_id, member))
+                
+                conn.commit()
+                conn.close()
+                
+                for member in members:
+                    if member in online_users:
+                        try:
+                            await online_users[member].send_json({
+                                "type": "chat_created",
+                                "chat_id": chat_id,
+                                "chat": {
+                                    "id": chat_id,
+                                    "name": chat_name,
+                                    "is_group": is_group,
+                                    "members": members,
+                                    "last_msg": None
+                                }
+                            })
+                        except:
+                            pass
+            
+            elif msg_type == "add_member":
                 chat_id = data.get("chat_id")
                 new_user = data.get("username")
-                if chat_id in chats and new_user in users and new_user not in chats[chat_id]["members"]:
-                    chats[chat_id]["members"].append(new_user)
-                    user_chats.setdefault(new_user, []).append(chat_id)
-                    # Уведомляем нового юзера
-                    if users[new_user]["ws"]:
+                
+                conn = get_db()
+                c = conn.cursor()
+                c.execute("SELECT 1 FROM chat_members WHERE chat_id = ? AND username = ?", (chat_id, username))
+                if not c.fetchone():
+                    conn.close()
+                    continue
+                
+                c.execute("SELECT 1 FROM chat_members WHERE chat_id = ? AND username = ?", (chat_id, new_user))
+                if c.fetchone():
+                    conn.close()
+                    continue
+                
+                c.execute("INSERT INTO chat_members (chat_id, username) VALUES (?, ?)", (chat_id, new_user))
+                conn.commit()
+                conn.close()
+                
+                if new_user in online_users:
+                    try:
+                        conn = get_db()
+                        c = conn.cursor()
+                        c.execute("SELECT name, is_group FROM chats WHERE chat_id = ?", (chat_id,))
+                        chat = c.fetchone()
+                        c.execute("SELECT username FROM chat_members WHERE chat_id = ?", (chat_id,))
+                        members = [r["username"] for r in c.fetchall()]
+                        conn.close()
+                        
+                        await online_users[new_user].send_json({
+                            "type": "chat_created",
+                            "chat_id": chat_id,
+                            "chat": {
+                                "id": chat_id,
+                                "name": chat["name"],
+                                "is_group": bool(chat["is_group"]),
+                                "members": members,
+                                "last_msg": None
+                            }
+                        })
+                    except:
+                        pass
+                
+                conn = get_db()
+                c = conn.cursor()
+                c.execute("SELECT username FROM chat_members WHERE chat_id = ?", (chat_id,))
+                members = [r["username"] for r in c.fetchall()]
+                conn.close()
+                
+                for member in members:
+                    if member != new_user and member in online_users:
                         try:
-                            c = chats[chat_id]
-                            await users[new_user]["ws"].send_json({"type": "chat_created", "chat_id": chat_id, "chat": {"id": chat_id, "name": c["name"], "is_group": c["is_group"], "members": c["members"], "last_msg": None}})
-                        except: pass
-                    # Уведомляем остальных
-                    for m in chats[chat_id]["members"]:
-                        if m != new_user and m in users and users[m]["ws"]:
-                            try: await users[m]["ws"].send_json({"type": "system_message", "chat_id": chat_id, "text": f"{username} позвал в чат {new_user}"})
-                            except: pass
-
-            elif msg_type == "update_profile":
-                new_display = data.get("display_name", "").strip()
-                new_username = data.get("username", "").strip()
-                if new_display: users[username]["display_name"] = new_display
-                if new_username and new_username != username and new_username not in users:
-                    users[new_username] = users.pop(username)
-                    user_chats[new_username] = user_chats.pop(username)
-                    for cid, c in chats.items():
-                        if username in c["members"]: c["members"] = [new_username if m == username else m for m in c["members"]]
-                        for msg in c["messages"]:
-                            if msg["from"] == username: msg["from"] = new_username; msg["display_name"] = new_display
-                    username = new_username
-                await websocket.send_json({"type": "profile_updated", "username": username, "display_name": users[username]["display_name"]})
+                            await online_users[member].send_json({
+                                "type": "system_message",
+                                "chat_id": chat_id,
+                                "text": f"{username} затащил {new_user} в чат"
+                            })
+                        except:
+                            pass
             
             elif msg_type == "delete_message":
-                chat_id = data.get("chat_id")
                 msg_id = data.get("id")
-                if chat_id and chat_id in chats:
-                    chats[chat_id]["messages"] = [m for m in chats[chat_id]["messages"] if m.get("id") != msg_id]
-                    for member in chats[chat_id]["members"]:
-                        if member in users and users[member]["ws"]:
-                            try: await users[member]["ws"].send_json({"type": "message_deleted", "chat_id": chat_id, "id": msg_id})
-                            except: pass
+                chat_id = data.get("chat_id")
+                
+                conn = get_db()
+                c = conn.cursor()
+                c.execute("DELETE FROM messages WHERE msg_id = ? AND chat_id = ?", (msg_id, chat_id))
+                conn.commit()
+                
+                c.execute("SELECT username FROM chat_members WHERE chat_id = ?", (chat_id,))
+                members = [r["username"] for r in c.fetchall()]
+                conn.close()
+                
+                for member in members:
+                    if member in online_users:
+                        try:
+                            await online_users[member].send_json({
+                                "type": "message_deleted",
+                                "chat_id": chat_id,
+                                "id": msg_id
+                            })
+                        except:
+                            pass
+            
+            elif msg_type in ["call_incoming", "call_accepted", "call_declined"]:
+                target = data.get("target")
+                if target and target in online_users:
+                    try:
+                        await online_users[target].send_json(data)
+                    except:
+                        pass
     
     except WebSocketDisconnect:
-        users[username]["ws"] = None
-        await broadcast_online_status(username, False)
+        if username in online_users:
+            del online_users[username]
+        await broadcast_status(username, False)
 
-async def broadcast_online_status(username: str, online: bool):
-    for cid, c in chats.items():
-        if username in c["members"]:
-            for member in c["members"]:
-                if member != username and member in users and users[member]["ws"]:
-                    try: await users[member]["ws"].send_json({"type": "user_status", "username": username, "online": online})
-                    except: pass
+async def broadcast_status(username: str, online: bool):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("""
+        SELECT DISTINCT cm.username 
+        FROM chat_members cm
+        WHERE cm.username != ? AND cm.chat_id IN (
+            SELECT chat_id FROM chat_members WHERE username = ?
+        )
+    """, (username, username))
+    members = [r["username"] for r in c.fetchall()]
+    conn.close()
+    
+    for member in members:
+        if member in online_users:
+            try:
+                await online_users[member].send_json({
+                    "type": "user_status",
+                    "username": username,
+                    "online": online
+                })
+            except:
+                pass
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
