@@ -328,9 +328,11 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
                 if username not in members:
                     members.append(username)
                 
+                conn = get_db()
+                c = conn.cursor()
+                
+                # Проверка на существующий личный чат
                 if not is_group and len(members) == 2:
-                    conn = get_db()
-                    c = conn.cursor()
                     c.execute("""
                         SELECT chat_id FROM chats 
                         WHERE is_group = 0 
@@ -341,10 +343,26 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
                         )
                     """, (members[0], members[1]))
                     existing = c.fetchone()
-                    conn.close()
                     
                     if existing:
-                        await websocket.send_json({"type": "chat_created", "chat_id": existing["chat_id"]})
+                        chat_id = existing["chat_id"]
+                        c.execute("SELECT username FROM chat_members WHERE chat_id = ?", (chat_id,))
+                        chat_members = [r["username"] for r in c.fetchall()]
+                        c.execute("SELECT * FROM messages WHERE chat_id = ? ORDER BY created_at DESC LIMIT 1", (chat_id,))
+                        last_msg_row = c.fetchone()
+                        last_msg = dict(last_msg_row) if last_msg_row else None
+                        if last_msg:
+                            last_msg["time"] = datetime.fromisoformat(last_msg["created_at"]).strftime("%H:%M") if last_msg["created_at"] else ""
+                        
+                        chat_obj = {
+                            "id": chat_id,
+                            "name": chat_name or "Личка",
+                            "is_group": False,
+                            "members": chat_members,
+                            "last_msg": last_msg
+                        }
+                        conn.close()
+                        await websocket.send_json({"type": "chat_created", "chat_id": chat_id, "chat": chat_obj})
                         continue
                 
                 chat_id = f"chat_{int(datetime.now().timestamp() * 1000)}"
@@ -353,15 +371,10 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
                         chat_name = f"Тусовка {datetime.now().strftime('%d.%m')}"
                     else:
                         other = [m for m in members if m != username][0]
-                        conn = get_db()
-                        c = conn.cursor()
                         c.execute("SELECT display_name FROM users WHERE username = ?", (other,))
                         row = c.fetchone()
-                        conn.close()
                         chat_name = row["display_name"] if row else other
                 
-                conn = get_db()
-                c = conn.cursor()
                 c.execute("INSERT INTO chats (chat_id, name, is_group, created_by) VALUES (?, ?, ?, ?)",
                           (chat_id, chat_name, int(is_group), username))
                 
@@ -369,6 +382,14 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
                     c.execute("INSERT INTO chat_members (chat_id, username) VALUES (?, ?)", (chat_id, member))
                 
                 conn.commit()
+                
+                chat_obj = {
+                    "id": chat_id,
+                    "name": chat_name,
+                    "is_group": is_group,
+                    "members": members,
+                    "last_msg": None
+                }
                 conn.close()
                 
                 for member in members:
@@ -377,13 +398,7 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
                             await online_users[member].send_json({
                                 "type": "chat_created",
                                 "chat_id": chat_id,
-                                "chat": {
-                                    "id": chat_id,
-                                    "name": chat_name,
-                                    "is_group": is_group,
-                                    "members": members,
-                                    "last_msg": None
-                                }
+                                "chat": chat_obj
                             })
                         except:
                             pass
@@ -406,17 +421,14 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
                 
                 c.execute("INSERT INTO chat_members (chat_id, username) VALUES (?, ?)", (chat_id, new_user))
                 conn.commit()
-                conn.close()
                 
                 if new_user in online_users:
                     try:
-                        conn = get_db()
-                        c = conn.cursor()
-                        c.execute("SELECT name, is_group FROM chats WHERE chat_id = ?", (chat_id,))
-                        chat = c.fetchone()
-                        c.execute("SELECT username FROM chat_members WHERE chat_id = ?", (chat_id,))
-                        members = [r["username"] for r in c.fetchall()]
-                        conn.close()
+                        c2 = conn.cursor()
+                        c2.execute("SELECT name, is_group FROM chats WHERE chat_id = ?", (chat_id,))
+                        chat = c2.fetchone()
+                        c2.execute("SELECT username FROM chat_members WHERE chat_id = ?", (chat_id,))
+                        chat_members = [r["username"] for r in c2.fetchall()]
                         
                         await online_users[new_user].send_json({
                             "type": "chat_created",
@@ -425,15 +437,13 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
                                 "id": chat_id,
                                 "name": chat["name"],
                                 "is_group": bool(chat["is_group"]),
-                                "members": members,
+                                "members": chat_members,
                                 "last_msg": None
                             }
                         })
                     except:
                         pass
                 
-                conn = get_db()
-                c = conn.cursor()
                 c.execute("SELECT username FROM chat_members WHERE chat_id = ?", (chat_id,))
                 members = [r["username"] for r in c.fetchall()]
                 conn.close()
