@@ -787,5 +787,133 @@ function logout() {
 function openModal(id) { document.getElementById(id).classList.add('active'); }
 function closeModal(id) { document.getElementById(id).classList.remove('active'); }
 </script>
+<script>
+let myId = null, myProfile = null, ws = null, currentChat = null, contextMsg = null, replyTo = null;
+let allChats = {}, allMessages = {}, selectedNewChatMembers = [], incomingCallData = null;
+let peer = null, currentCall = null;
+
+function initPeer() {
+  const peerId = `pohuy_${myId}`;
+  peer = new Peer(peerId, { debug: 1 });
+  
+  peer.on('open', (id) => {
+    console.log('[PeerJS] Мой ID:', id);
+  });
+  
+  peer.on('error', (err) => {
+    console.error('[PeerJS] Ошибка:', err);
+    showNotification('Голосовой чат недоступен 🎙️', 'error');
+  });
+  
+  peer.on('call', (call) => {
+    console.log('[PeerJS] Входящий звонок от:', call.peer);
+    const callerName = call.peer.replace('pohuy_', '');
+    showIncomingCall(callerName, call.peer);
+    
+    navigator.mediaDevices.getUserMedia({audio: true}).then((stream) => {
+      window.localStream = stream;
+      call.answer(stream);
+      currentCall = call;
+      call.on('stream', (remoteStream) => {
+        const audio = document.createElement('audio');
+        audio.srcObject = remoteStream;
+        audio.autoplay = true;
+        audio.play();
+      });
+    }).catch(err => {
+      console.error('[PeerJS] Микрофон:', err);
+      showNotification('Нет доступа к микрофону!', 'error');
+    });
+  });
+}
+
+function startCall() {
+  if (!currentChat) return;
+  const chat = allChats[currentChat];
+  const others = chat.members.filter(m => m !== myId);
+  if (others.length === 0) return showNotification('Тут только ты, ебаный одиночка. Звонить некому!', 'error');
+  
+  const target = others[0];
+  const targetPeerId = `pohuy_${target}`;
+  
+  navigator.mediaDevices.getUserMedia({audio: true}).then((stream) => {
+    window.localStream = stream;
+    console.log('[PeerJS] Звоним:', targetPeerId);
+    
+    const call = peer.call(targetPeerId, stream);
+    currentCall = call;
+    
+    call.on('stream', (remoteStream) => {
+      const audio = document.createElement('audio');
+      audio.srcObject = remoteStream;
+      audio.autoplay = true;
+      audio.play();
+    });
+    
+    call.on('error', (err) => {
+      console.error('[PeerJS] Call error:', err);
+      showNotification('Не удалось дозвониться 📞', 'error');
+    });
+    
+    showNotification(`Накидываем ебаный гудок @${target}... 📞`, 'success');
+    ws.send(JSON.stringify({ type: 'call_incoming', target, from: myId, peerId: peer.id }));
+    
+  }).catch(err => { 
+    showNotification('Не удалось получить доступ к микрофону!', 'error'); 
+  });
+}
+
+function showIncomingCall(fromUser, peerId) {
+  incomingCallData = { from: fromUser, peerId };
+  document.getElementById('call-name').innerText = fromUser;
+  document.getElementById('call-avatar').innerText = fromUser[0].toUpperCase();
+  document.getElementById('call-status').innerText = 'Входящий ебаный вызов...';
+  document.getElementById('call-overlay').classList.add('active');
+}
+
+function acceptCall() {
+  if (incomingCallData) {
+    navigator.mediaDevices.getUserMedia({audio: true}).then((stream) => {
+      window.localStream = stream;
+      const call = peer.call(incomingCallData.peerId, stream);
+      currentCall = call;
+      call.on('stream', (remoteStream) => {
+        const audio = document.createElement('audio');
+        audio.srcObject = remoteStream;
+        audio.autoplay = true;
+        audio.play();
+      });
+      ws.send(JSON.stringify({ type: 'call_accepted', target: incomingCallData.from, peerId: peer.id }));
+      hideCallUI();
+      showNotification('Соединение пиздатое! Говори! 🎙️', 'success');
+    });
+  }
+}
+
+function declineCall() {
+  if (incomingCallData) {
+    ws.send(JSON.stringify({ type: 'call_declined', target: incomingCallData.from }));
+    hideCallUI();
+    showNotification('Абонент послал тебя нахуй', 'error');
+  }
+}
+
+function hideCallUI() { 
+  document.getElementById('call-overlay').classList.remove('active'); 
+  incomingCallData = null; 
+}
+
+function showNotification(text, type = 'success') {
+  const notif = document.createElement('div');
+  notif.className = `notification ${type}`;
+  notif.textContent = text;
+  document.body.appendChild(notif);
+  setTimeout(() => { 
+    notif.style.opacity = '0'; 
+    notif.style.transform = 'translateX(100px)'; 
+    setTimeout(() => notif.remove(), 300); 
+  }, 3000);
+}
+</script>
 </body>
 </html>
