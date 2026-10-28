@@ -7,29 +7,9 @@
 <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@700&display=swap');
-
 * { margin: 0; padding: 0; box-sizing: border-box; }
-
-body { 
-  font-family: 'Inter', sans-serif; 
-  background: linear-gradient(135deg, #0a0e27 0%, #1a1f3a 50%, #0d1235 100%); 
-  color: #fff; 
-  height: 100vh; 
-  overflow: hidden;
-  position: relative;
-}
-
-body::before {
-  content: '';
-  position: fixed;
-  inset: 0;
-  background: 
-    radial-gradient(circle at 20% 50%, rgba(0, 255, 136, 0.1) 0%, transparent 50%),
-    radial-gradient(circle at 80% 80%, rgba(0, 170, 255, 0.1) 0%, transparent 50%);
-  pointer-events: none;
-  animation: bgPulse 8s ease-in-out infinite;
-}
-
+body { font-family: 'Inter', sans-serif; background: linear-gradient(135deg, #0a0e27 0%, #1a1f3a 50%, #0d1235 100%); color: #fff; height: 100vh; overflow: hidden; position: relative; }
+body::before { content: ''; position: fixed; inset: 0; background: radial-gradient(circle at 20% 50%, rgba(0, 255, 136, 0.1) 0%, transparent 50%), radial-gradient(circle at 80% 80%, rgba(0, 170, 255, 0.1) 0%, transparent 50%); pointer-events: none; animation: bgPulse 8s ease-in-out infinite; }
 @keyframes bgPulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 0.8; } }
 @keyframes rainbow-flow { 0% { background-position: 0% 50%; filter: hue-rotate(0deg); } 50% { background-position: 100% 50%; filter: hue-rotate(180deg); } 100% { background-position: 0% 50%; filter: hue-rotate(360deg); } }
 @keyframes neon-glow { from { text-shadow: 0 0 10px #00ff88, 0 0 20px #00ff88, 0 0 30px #00ff88; } to { text-shadow: 0 0 20px #ff00ff, 0 0 40px #ff00ff, 0 0 60px #ff00ff, 0 0 80px #ff00ff; } }
@@ -438,6 +418,8 @@ function connect() {
         call.on('stream', (remoteStream) => { const audio = document.createElement('audio'); audio.srcObject = remoteStream; audio.play(); });
       }
       hideCallUI(); showNotification('Соединение пиздатое! Говори! 🎙️', 'success'); 
+    } else if (data.type === 'error') {
+      showNotification(data.message || 'Ошибка сервера', 'error');
     }
   };
   ws.onopen = () => showNotification('Связь с сервером пиздатая! 🟢', 'success');
@@ -567,8 +549,6 @@ function saveProfile() {
 }
 
 function openSearch() { document.getElementById('friend-search').value = ''; document.getElementById('friend-results').innerHTML = ''; openModal('modal-search'); }
-
-// === ИСПРАВЛЕННЫЙ ПОИСК ДРУЗЕЙ С КНОПКОЙ "ЛС" ===
 async function searchFriends() {
   const q = document.getElementById('friend-search').value.trim();
   if (q.length < 2) { document.getElementById('friend-results').innerHTML = ''; return; }
@@ -582,11 +562,7 @@ async function searchFriends() {
       if (u.username === myId) return;
       const div = document.createElement('div');
       div.className = 'search-result-item';
-      div.innerHTML = `
-        <div class="avatar">${u.display_name[0].toUpperCase()}</div>
-        <div class="info"><div class="name">${u.display_name}</div><div class="username">@${u.username}</div></div>
-        <button style="background:#00ff88;color:#000;border:none;padding:6px 12px;border-radius:6px;cursor:pointer;font-weight:600;font-size:12px;" onclick="openDirectMessage('${u.username}')">💬 ЛС</button>
-      `;
+      div.innerHTML = `<div class="avatar">${u.display_name[0].toUpperCase()}</div><div class="info"><div class="name">${u.display_name}</div><div class="username">@${u.username}</div></div><button style="background:#00ff88;color:#000;border:none;padding:6px 12px;border-radius:6px;cursor:pointer;font-weight:600;font-size:12px;" onclick="openDirectMessage('${u.username}')">💬 ЛС</button>`;
       container.appendChild(div);
     });
   } catch (e) { showNotification('Ебаный глюк связи, сука!', 'error'); }
@@ -608,7 +584,6 @@ function openDirectMessage(targetUsername) {
 
 function openNewChat() { selectedNewChatMembers = []; document.getElementById('new-chat-search').value = ''; document.getElementById('new-chat-results').innerHTML = ''; document.getElementById('selected-members').innerHTML = '<span style="color:#6c7883;">Ебаная пустота, выбери кого нибудь, сука!</span>'; document.getElementById('is-group').checked = false; document.getElementById('is-empty').checked = false; document.getElementById('group-name').style.display = 'none'; openModal('modal-new-chat'); }
 
-// === ИСПРАВЛЕННЫЙ ПОИСК ДЛЯ СОЗДАНИЯ ЧАТА С КНОПКОЙ "ДОБАВИТЬ" ===
 async function searchUsersForChat() {
   const q = document.getElementById('new-chat-search').value.trim();
   if (q.length < 2) { document.getElementById('new-chat-results').innerHTML = ''; return; }
@@ -621,11 +596,7 @@ async function searchUsersForChat() {
       if (u.username === myId || selectedNewChatMembers.includes(u.username)) return;
       const div = document.createElement('div');
       div.className = 'search-result-item';
-      div.innerHTML = `
-        <div class="avatar">${u.display_name[0].toUpperCase()}</div>
-        <div class="info"><div class="name">${u.display_name}</div><div class="username">@${u.username}</div></div>
-        <button style="background:#00ff88;color:#000;border:none;padding:6px 12px;border-radius:6px;cursor:pointer;font-weight:600;font-size:12px;" onclick="addMemberToSelection('${u.username}')">➕ Добавить</button>
-      `;
+      div.innerHTML = `<div class="avatar">${u.display_name[0].toUpperCase()}</div><div class="info"><div class="name">${u.display_name}</div><div class="username">@${u.username}</div></div><button style="background:#00ff88;color:#000;border:none;padding:6px 12px;border-radius:6px;cursor:pointer;font-weight:600;font-size:12px;" onclick="addMemberToSelection('${u.username}')">➕ Добавить</button>`;
       container.appendChild(div);
     });
   } catch (e) { showNotification('Ебаный глюк поиска, блядь!', 'error'); }
@@ -658,12 +629,30 @@ function createChat() {
   const isEmpty = document.getElementById('is-empty').checked;
   const isGroup = document.getElementById('is-group').checked;
   const groupName = document.getElementById('group-name').value.trim();
+  
+  console.log('[DEBUG] createChat called', { isEmpty, isGroup, groupName, members: selectedNewChatMembers });
+  
   if (!isEmpty && selectedNewChatMembers.length === 0) return showNotification('Выбери кого-нибудь, блядь, или создай ебаный пустой чат!', 'error');
   if (isGroup && !groupName && selectedNewChatMembers.length > 0) return showNotification('Дай название группе, сука!', 'error');
-  ws.send(JSON.stringify({ type: 'create_chat', members: isEmpty ? [] : selectedNewChatMembers, is_group: isGroup, name: groupName }));
-  closeModal('modal-new-chat');
-  selectedNewChatMembers = [];
-  showNotification('Чат создан, погнали! 🔥', 'success');
+  
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    console.error('[DEBUG] WebSocket is not open! State:', ws ? ws.readyState : 'null');
+    showNotification('Связь с сервером потеряна, блядь! Переподключаюсь...', 'error');
+    connect();
+    return;
+  }
+  
+  try {
+    const payload = { type: 'create_chat', members: isEmpty ? [] : selectedNewChatMembers, is_group: isGroup, name: groupName };
+    console.log('[DEBUG] Sending payload to server:', payload);
+    ws.send(JSON.stringify(payload));
+    closeModal('modal-new-chat');
+    selectedNewChatMembers = [];
+    showNotification('Запрос отправлен, создаем чат... ⏳', 'success');
+  } catch (e) {
+    console.error('[DEBUG] ws.send error:', e);
+    showNotification('Ебаный глюк отправки! Смотри консоль (F12).', 'error');
+  }
 }
 
 function openInvite() { if (!currentChat) return; document.getElementById('invite-search').value = ''; document.getElementById('invite-results').innerHTML = ''; openModal('modal-invite'); }
