@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PoHuy Link — Ебаный Приватный Мессенджер</title>
-<script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+<script src="https://meet.jit.si/external_api.js"></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@700&display=swap');
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -144,6 +144,10 @@ body::before { content: ''; position: fixed; inset: 0; background: radial-gradie
 .call-btn.decline:hover { transform: scale(1.1); box-shadow: 0 15px 40px rgba(255, 82, 82, 0.5); }
 .call-btn-label { text-align: center; margin-top: 10px; font-size: 12px; color: #6c7883; text-transform: uppercase; letter-spacing: 1px; }
 .call-btn-wrapper { display: flex; flex-direction: column; align-items: center; }
+
+/* Jitsi Meet Overlay */
+#jitsi-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.95); z-index: 5000; align-items: center; justify-content: center; }
+#jitsi-container { width: 95%; height: 95%; background: #000; border-radius: 12px; overflow: hidden; border: 2px solid #00ff88; }
 </style>
 </head>
 <body>
@@ -159,7 +163,7 @@ body::before { content: ''; position: fixed; inset: 0; background: radial-gradie
     <div id="login-form">
       <input type="text" id="login-username" placeholder="Юзернейм" maxlength="20">
       <input type="password" id="login-password" placeholder="Пароль" maxlength="50">
-      <button onclick="doLogin()">🚀 Войти, блядь</button>
+      <button onclick="doLogin()"> Войти, блядь</button>
     </div>
     <div id="register-form" style="display:none;">
       <input type="text" id="reg-username" placeholder="Придумай юзернейм" maxlength="20">
@@ -194,9 +198,9 @@ body::before { content: ''; position: fixed; inset: 0; background: radial-gradie
           <div class="chat-header-status" id="chat-status">—</div>
         </div>
         <div class="chat-header-actions">
-          <button class="icon-btn" onclick="openInvite()" title="Позвать братву">👥+</button>
+          <button class="icon-btn" onclick="openInvite()" title="Позвать братву">+</button>
           <button class="icon-btn" onclick="startCall()" title="Накинуть ебаный гудок">📞</button>
-          <button class="icon-btn" onclick="openChatInfo()" title="Инфа">ℹ️</button>
+          <button class="icon-btn" onclick="openChatInfo()" title="Инфа">️</button>
         </div>
       </div>
       <div class="chat-messages" id="chat-messages"></div>
@@ -218,8 +222,8 @@ body::before { content: ''; position: fixed; inset: 0; background: radial-gradie
 
 <div id="context-menu">
   <div onclick="replyFromMenu()">↩ Ответить, блядь</div>
-  <div onclick="copyFromMenu()">📋 Скопировать, сука</div>
-  <div onclick="pinFromMenu()">📌 Закрепить, пиздато</div>
+  <div onclick="copyFromMenu()"> Скопировать, сука</div>
+  <div onclick="pinFromMenu()"> Закрепить, пиздато</div>
   <div class="danger" onclick="deleteFromMenu()">🗑 Стереть в ебаный порошок</div>
 </div>
 
@@ -308,7 +312,7 @@ body::before { content: ''; position: fixed; inset: 0; background: radial-gradie
   <div class="call-status" id="call-status">Входящий ебаный вызов...</div>
   <div class="call-actions">
     <div class="call-btn-wrapper">
-      <button class="call-btn decline" onclick="declineCall()">📞</button>
+      <button class="call-btn decline" onclick="declineCall()"></button>
       <div class="call-btn-label">Послать нахуй</div>
     </div>
     <div class="call-btn-wrapper">
@@ -318,10 +322,18 @@ body::before { content: ''; position: fixed; inset: 0; background: radial-gradie
   </div>
 </div>
 
+<!-- Jitsi Meet Overlay -->
+<div id="jitsi-overlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.95); z-index:5000; align-items:center; justify-content:center;">
+  <div style="position:relative; width:95%; height:95%; background:#000; border-radius:12px; overflow:hidden; border: 2px solid #00ff88;">
+    <button onclick="closeJitsi()" style="position:absolute; top:15px; right:15px; z-index:10; background:#ff5252; color:white; border:none; padding:10px 20px; border-radius:8px; cursor:pointer; font-weight:bold; font-size:14px;">✕ Закрыть звонок</button>
+    <div id="jitsi-container" style="width:100%; height:100%;"></div>
+  </div>
+</div>
+
 <script>
 let myId = null, myProfile = null, ws = null, currentChat = null, contextMsg = null, replyTo = null;
 let allChats = {}, allMessages = {}, selectedNewChatMembers = [], incomingCallData = null;
-let peer = null, currentCall = null;
+let jitsiAPI = null;
 
 function showAuthTab(tab) {
   document.querySelectorAll('.auth-tab').forEach(t => {
@@ -350,7 +362,6 @@ async function doLogin() {
     document.getElementById('login-screen').style.display = 'none';
     document.getElementById('app').style.display = 'flex';
     connect();
-    initPeer();
     showNotification(`Залетай, ${data.display_name}, тут пиздатый движ! 🔥`, 'success');
   } catch (e) { showNotification('Ебаный глюк связи!', 'error'); }
 }
@@ -409,15 +420,19 @@ function connect() {
       myProfile = { username: data.username, display_name: data.display_name }; 
       if (data.username !== myId) { myId = data.username; showNotification('Профиль обновлен, пиздато! ✅', 'success'); } 
     } else if (data.type === 'system_message') { showNotification(data.text, 'success'); }
-    else if (data.type === 'call_incoming') { showIncomingCall(data.from, data.peerId); }
+    else if (data.type === 'call_incoming') { 
+      const roomName = data.roomName || `pohuy_${[myId, data.from].sort().join('_')}`;
+      if (confirm(` Входящий звонок от @${data.from}!\n\nПринять?`)) {
+        openJitsiCall(roomName);
+        ws.send(JSON.stringify({ type: 'call_accepted', target: data.from }));
+      } else {
+        ws.send(JSON.stringify({ type: 'call_declined', target: data.from }));
+      }
+    }
     else if (data.type === 'call_declined') { hideCallUI(); showNotification('Абонент послал тебя нахуй ', 'error'); }
     else if (data.type === 'call_accepted') { 
-      if (peer) {
-        const call = peer.call(data.peerId, window.localStream);
-        currentCall = call;
-        call.on('stream', (remoteStream) => { const audio = document.createElement('audio'); audio.srcObject = remoteStream; audio.play(); });
-      }
-      hideCallUI(); showNotification('Соединение пиздатое! Говори! 🎙️', 'success'); 
+      hideCallUI(); 
+      showNotification('Соединение пиздатое! Говори! 🎙️', 'success'); 
     } else if (data.type === 'error') {
       showNotification(data.message || 'Ошибка сервера', 'error');
     }
@@ -433,42 +448,6 @@ async function loadMessages(chatId) {
     allMessages[chatId] = messages.map(m => ({ ...m, time: m.time || new Date(m.created_at).toLocaleTimeString('ru-RU', {hour: '2-digit', minute: '2-digit'}) }));
     if (currentChat === chatId) renderMessages();
   } catch (e) { console.error('Error loading messages:', e); }
-}
-
-function initPeer() {
-  // Создаём стабильный Peer ID без timestamp
-  peer = new Peer(`pohuy_${myId}`, {
-    host: '0.peerjs.com',
-    port: 443,
-    secure: true
-  });
-  
-  peer.on('open', (id) => {
-    console.log('[PeerJS] Connected with ID:', id);
-  });
-  
-  peer.on('error', (err) => {
-    console.error('[PeerJS] Error:', err);
-    showNotification('Ошибка голосового соединения! 🎙️', 'error');
-  });
-  
-  peer.on('call', (call) => {
-    console.log('[PeerJS] Incoming call from:', call.peer);
-    navigator.mediaDevices.getUserMedia({audio: true}).then((stream) => {
-      window.localStream = stream;
-      call.answer(stream);
-      currentCall = call;
-      call.on('stream', (remoteStream) => {
-        const audio = document.createElement('audio');
-        audio.srcObject = remoteStream;
-        audio.autoplay = true;
-        audio.play();
-      });
-    }).catch(err => {
-      console.error('[PeerJS] getUserMedia error:', err);
-      showNotification('Не удалось получить доступ к микрофону!', 'error');
-    });
-  });
 }
 
 function showNotification(text, type = 'success') {
@@ -702,27 +681,63 @@ async function searchForInvite() {
 
 function openFriends() { document.getElementById('dropdown-menu').classList.remove('active'); openSearch(); }
 function openSettings() { document.getElementById('dropdown-menu').classList.remove('active'); openModal('modal-settings'); }
-function openChatInfo() { if (!currentChat) return; const chat = allChats[currentChat]; alert(`📋 Ебаная инфа по чату:\n\nНазвание: ${chat.name}\nТип: ${chat.is_group ? 'Групповой движ' : 'Личка'}\nУчастники (${chat.members.length}): ${chat.members.map(m => '@'+m).join(', ')}`); }
+function openChatInfo() { if (!currentChat) return; const chat = allChats[currentChat]; alert(` Ебаная инфа по чату:\n\nНазвание: ${chat.name}\nТип: ${chat.is_group ? 'Групповой движ' : 'Личка'}\nУчастники (${chat.members.length}): ${chat.members.map(m => '@'+m).join(', ')}`); }
 
 function startCall() {
   if (!currentChat) return;
   const chat = allChats[currentChat];
   const others = chat.members.filter(m => m !== myId);
   if (others.length === 0) return showNotification('Тут только ты, ебаный одиночка. Звонить некому!', 'error');
+  
   const target = others[0];
-  navigator.mediaDevices.getUserMedia({audio: true}).then((stream) => {
-    window.localStream = stream;
-    const peerId = `pohuy_${target}`;
-    console.log('[PeerJS] Calling:', peerId);
-    const call = peer.call(peerId, stream);
-    currentCall = call;
-    call.on('stream', (remoteStream) => { const audio = document.createElement('audio'); audio.srcObject = remoteStream; audio.play(); });
-    ws.send(JSON.stringify({ type: 'call_incoming', target, from: myId, peerId: peer.id }));
-    showNotification(`Накидываем ебаный гудок @${target}... 📞`, 'success');
-  }).catch(err => { showNotification('Не удалось получить доступ к микрофону!', 'error'); });
+  // Уникальная комната = имена обоих юзеров (отсортированы, чтобы у обоих была одинаковая)
+  const roomName = `pohuy_${[myId, target].sort().join('_')}`;
+  
+  openJitsiCall(roomName);
+  
+  // Уведомляем собеседника через наш WebSocket
+  ws.send(JSON.stringify({ 
+    type: 'call_incoming', 
+    target, 
+    from: myId, 
+    roomName: roomName 
+  }));
+  
+  showNotification(`Накидываем ебаный гудок @${target}... 📞`, 'success');
+}
+
+function openJitsiCall(roomName) {
+  document.getElementById('jitsi-overlay').style.display = 'flex';
+  
+  jitsiAPI = new JitsiMeetExternalAPI('meet.jit.si', {
+    roomName: roomName,
+    parentNode: document.getElementById('jitsi-container'),
+    userInfo: { displayName: myProfile?.display_name || myId },
+    configOverwrite: { 
+      startWithAudioMuted: false,
+      startWithVideoMuted: true,
+      disableDeepLinking: true
+    },
+    interfaceConfigOverwrite: {
+      TOOLBAR_BUTTONS: ['microphone', 'camera', 'hangup', 'tileview'],
+      SHOW_JITSI_WATERMARK: false,
+      SHOW_WATERMARK_FOR_GUESTS: false,
+      DEFAULT_BACKGROUND: '#0a0e27'
+    }
+  });
+}
+
+function closeJitsi() {
+  document.getElementById('jitsi-overlay').style.display = 'none';
+  document.getElementById('jitsi-container').innerHTML = '';
+  if (jitsiAPI) {
+    jitsiAPI.dispose();
+    jitsiAPI = null;
+  }
 }
 
 function showIncomingCall(fromUser, peerId) {
+  // Для совместимости со старыми сообщениями
   incomingCallData = { from: fromUser, peerId };
   document.getElementById('call-name').innerText = fromUser;
   document.getElementById('call-avatar').innerText = fromUser[0].toUpperCase();
@@ -731,28 +746,25 @@ function showIncomingCall(fromUser, peerId) {
 }
 
 function acceptCall() {
+  // Для совместимости
   if (incomingCallData) {
-    navigator.mediaDevices.getUserMedia({audio: true}).then((stream) => {
-      window.localStream = stream;
-      const call = peer.call(incomingCallData.peerId, stream);
-      currentCall = call;
-      call.on('stream', (remoteStream) => { const audio = document.createElement('audio'); audio.srcObject = remoteStream; audio.play(); });
-      ws.send(JSON.stringify({ type: 'call_accepted', target: incomingCallData.from, peerId: peer.id }));
-      hideCallUI();
-      showNotification('Соединение пиздатое! Говори! 🎙️', 'success');
-    });
+    hideCallUI();
+    showNotification('Соединение пиздатое! Говори! 🎙️', 'success');
   }
 }
 
 function declineCall() {
+  // Для совместимости
   if (incomingCallData) {
-    ws.send(JSON.stringify({ type: 'call_declined', target: incomingCallData.from }));
     hideCallUI();
     showNotification('Абонент послал тебя нахуй', 'error');
   }
 }
 
-function hideCallUI() { document.getElementById('call-overlay').classList.remove('active'); incomingCallData = null; }
+function hideCallUI() { 
+  document.getElementById('call-overlay').classList.remove('active'); 
+  incomingCallData = null; 
+}
 
 function setTheme(theme) {
   if (theme === 'light') {
@@ -786,134 +798,6 @@ function logout() {
 
 function openModal(id) { document.getElementById(id).classList.add('active'); }
 function closeModal(id) { document.getElementById(id).classList.remove('active'); }
-</script>
-<script>
-let myId = null, myProfile = null, ws = null, currentChat = null, contextMsg = null, replyTo = null;
-let allChats = {}, allMessages = {}, selectedNewChatMembers = [], incomingCallData = null;
-let peer = null, currentCall = null;
-
-function initPeer() {
-  const peerId = `pohuy_${myId}`;
-  peer = new Peer(peerId, { debug: 1 });
-  
-  peer.on('open', (id) => {
-    console.log('[PeerJS] Мой ID:', id);
-  });
-  
-  peer.on('error', (err) => {
-    console.error('[PeerJS] Ошибка:', err);
-    showNotification('Голосовой чат недоступен 🎙️', 'error');
-  });
-  
-  peer.on('call', (call) => {
-    console.log('[PeerJS] Входящий звонок от:', call.peer);
-    const callerName = call.peer.replace('pohuy_', '');
-    showIncomingCall(callerName, call.peer);
-    
-    navigator.mediaDevices.getUserMedia({audio: true}).then((stream) => {
-      window.localStream = stream;
-      call.answer(stream);
-      currentCall = call;
-      call.on('stream', (remoteStream) => {
-        const audio = document.createElement('audio');
-        audio.srcObject = remoteStream;
-        audio.autoplay = true;
-        audio.play();
-      });
-    }).catch(err => {
-      console.error('[PeerJS] Микрофон:', err);
-      showNotification('Нет доступа к микрофону!', 'error');
-    });
-  });
-}
-
-function startCall() {
-  if (!currentChat) return;
-  const chat = allChats[currentChat];
-  const others = chat.members.filter(m => m !== myId);
-  if (others.length === 0) return showNotification('Тут только ты, ебаный одиночка. Звонить некому!', 'error');
-  
-  const target = others[0];
-  const targetPeerId = `pohuy_${target}`;
-  
-  navigator.mediaDevices.getUserMedia({audio: true}).then((stream) => {
-    window.localStream = stream;
-    console.log('[PeerJS] Звоним:', targetPeerId);
-    
-    const call = peer.call(targetPeerId, stream);
-    currentCall = call;
-    
-    call.on('stream', (remoteStream) => {
-      const audio = document.createElement('audio');
-      audio.srcObject = remoteStream;
-      audio.autoplay = true;
-      audio.play();
-    });
-    
-    call.on('error', (err) => {
-      console.error('[PeerJS] Call error:', err);
-      showNotification('Не удалось дозвониться 📞', 'error');
-    });
-    
-    showNotification(`Накидываем ебаный гудок @${target}... 📞`, 'success');
-    ws.send(JSON.stringify({ type: 'call_incoming', target, from: myId, peerId: peer.id }));
-    
-  }).catch(err => { 
-    showNotification('Не удалось получить доступ к микрофону!', 'error'); 
-  });
-}
-
-function showIncomingCall(fromUser, peerId) {
-  incomingCallData = { from: fromUser, peerId };
-  document.getElementById('call-name').innerText = fromUser;
-  document.getElementById('call-avatar').innerText = fromUser[0].toUpperCase();
-  document.getElementById('call-status').innerText = 'Входящий ебаный вызов...';
-  document.getElementById('call-overlay').classList.add('active');
-}
-
-function acceptCall() {
-  if (incomingCallData) {
-    navigator.mediaDevices.getUserMedia({audio: true}).then((stream) => {
-      window.localStream = stream;
-      const call = peer.call(incomingCallData.peerId, stream);
-      currentCall = call;
-      call.on('stream', (remoteStream) => {
-        const audio = document.createElement('audio');
-        audio.srcObject = remoteStream;
-        audio.autoplay = true;
-        audio.play();
-      });
-      ws.send(JSON.stringify({ type: 'call_accepted', target: incomingCallData.from, peerId: peer.id }));
-      hideCallUI();
-      showNotification('Соединение пиздатое! Говори! 🎙️', 'success');
-    });
-  }
-}
-
-function declineCall() {
-  if (incomingCallData) {
-    ws.send(JSON.stringify({ type: 'call_declined', target: incomingCallData.from }));
-    hideCallUI();
-    showNotification('Абонент послал тебя нахуй', 'error');
-  }
-}
-
-function hideCallUI() { 
-  document.getElementById('call-overlay').classList.remove('active'); 
-  incomingCallData = null; 
-}
-
-function showNotification(text, type = 'success') {
-  const notif = document.createElement('div');
-  notif.className = `notification ${type}`;
-  notif.textContent = text;
-  document.body.appendChild(notif);
-  setTimeout(() => { 
-    notif.style.opacity = '0'; 
-    notif.style.transform = 'translateX(100px)'; 
-    setTimeout(() => notif.remove(), 300); 
-  }, 3000);
-}
 </script>
 </body>
 </html>
