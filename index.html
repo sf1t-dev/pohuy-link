@@ -436,14 +436,37 @@ async function loadMessages(chatId) {
 }
 
 function initPeer() {
-  peer = new Peer(`pohuy_${myId}_${Date.now()}`);
-  peer.on('open', (id) => console.log('Peer ID:', id));
+  // Создаём стабильный Peer ID без timestamp
+  peer = new Peer(`pohuy_${myId}`, {
+    host: '0.peerjs.com',
+    port: 443,
+    secure: true
+  });
+  
+  peer.on('open', (id) => {
+    console.log('[PeerJS] Connected with ID:', id);
+  });
+  
+  peer.on('error', (err) => {
+    console.error('[PeerJS] Error:', err);
+    showNotification('Ошибка голосового соединения! 🎙️', 'error');
+  });
+  
   peer.on('call', (call) => {
+    console.log('[PeerJS] Incoming call from:', call.peer);
     navigator.mediaDevices.getUserMedia({audio: true}).then((stream) => {
       window.localStream = stream;
       call.answer(stream);
       currentCall = call;
-      call.on('stream', (remoteStream) => { const audio = document.createElement('audio'); audio.srcObject = remoteStream; audio.play(); });
+      call.on('stream', (remoteStream) => {
+        const audio = document.createElement('audio');
+        audio.srcObject = remoteStream;
+        audio.autoplay = true;
+        audio.play();
+      });
+    }).catch(err => {
+      console.error('[PeerJS] getUserMedia error:', err);
+      showNotification('Не удалось получить доступ к микрофону!', 'error');
     });
   });
 }
@@ -689,7 +712,9 @@ function startCall() {
   const target = others[0];
   navigator.mediaDevices.getUserMedia({audio: true}).then((stream) => {
     window.localStream = stream;
-    const call = peer.call(`pohuy_${target}`, stream);
+    const peerId = `pohuy_${target}`;
+    console.log('[PeerJS] Calling:', peerId);
+    const call = peer.call(peerId, stream);
     currentCall = call;
     call.on('stream', (remoteStream) => { const audio = document.createElement('audio'); audio.srcObject = remoteStream; audio.play(); });
     ws.send(JSON.stringify({ type: 'call_incoming', target, from: myId, peerId: peer.id }));
